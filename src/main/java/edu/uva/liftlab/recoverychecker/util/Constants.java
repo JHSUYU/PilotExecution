@@ -24,6 +24,8 @@ public class Constants {
 
     public static final String SHADOW_FIELD= "isShadow";
 
+    public static final String ORIGINAL_THREAD_ID_FIELD = "originalThreadId";
+
     public static final String WRAP_CONTEXT_CLASS_NAME = "org.apache.hadoop.hbase.trace.WrapContext";
 
     public static final String UTIL_CLASS_NAME = "org.apache.hadoop.hbase.trace.DryRunTraceUtil";
@@ -41,6 +43,8 @@ public class Constants {
     public static final boolean debug = false;
 
     public static final String mode = "SEDA";
+
+    public static final String STATE_ISOLATION_CLASS = "org.pilot.State";
 
 
 }

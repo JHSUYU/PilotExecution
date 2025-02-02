@@ -29,6 +29,8 @@ public class FastForwardMethodGenerator {
 
     public List<SootMethod> fastForwardMethods = new ArrayList<>();
 
+    public HashMap<Unit, Unit> divergeToGotoMap = new HashMap<>();
+
 
 //    public void processClasses(ClassFilterHelper filter) {
 //        for (SootClass sc : Scene.v().getApplicationClasses()) {
@@ -80,6 +82,7 @@ public class FastForwardMethodGenerator {
         for (Map.Entry<Unit, String> entry : unitStringMap.entrySet()) {
             Unit originalUnit = entry.getKey();
             Unit clonedUnit = originalToCloneMap.get(originalUnit);
+            LOG.info("entry.getValue() = " + entry.getValue());
             unitIds.put(clonedUnit, entry.getValue());
         }
         methodUnitIds.put(instrumentationMethod, unitIds);

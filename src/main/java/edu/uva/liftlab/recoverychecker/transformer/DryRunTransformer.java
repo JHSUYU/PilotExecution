@@ -139,37 +139,49 @@ public class DryRunTransformer extends SceneTransformer {
 //        ThreadAnalyzer threadAnalyzer = new ThreadAnalyzer(originalThreadClass, dryRunThreadClass);
 //        threadAnalyzer.hookMicroFork();
         LOG.info("DryRunTransformer executing with phase: " + phaseName);
-//
-//        dryRunMethodGenerator.processClasses(filter);
-//
-//        StateRedirection.redirectAllClassesStates(filter);
-//
-//
-//        LOG.info("Starting to add dry run fields to all classes");
-//        for (SootClass sc : Scene.v().getApplicationClasses()) {
-//            // Skip interfaces and phantom classes
-//            if (sc.isInterface() || sc.isPhantom() || SootUtils.isDryRunClass(sc)) {
-//                continue;
-//            }
-//            InjectDryRunTrace injectDryRunTrace = new InjectDryRunTrace(sc);
-//            injectDryRunTrace.addNeedDryRunTraceField();
-//        }
-//
-//        LOG.info("Starting to propagate baggage");
-//
-//
-//        for (SootClass sc : Scene.v().getApplicationClasses()) {
-//            // Skip interfaces and phantom classes
-//            if(filter.shouldSkip(sc)) {
-//                continue;
-//            }
-//
-//            BaggagePropagation baggagePropagation = new BaggagePropagation(sc);
-//            baggagePropagation.propagateBaggage();
-//            //LOG.info("Processed class: {}", sc.getName());
-//        }
-//        StartingPointInstrumenter startingPointInstrumenter = new StartingPointInstrumenter(this.filter.getStartingPoints());
-//        startingPointInstrumenter.instrumentStartingPoint();
+
+        //func->func$instrumentation
+        //field->field$dryrun
+
+
+        //func1$instrumentation Runnable Task:run()
+        //run() -> run$instrumentation
+
+        //Distributed Tracing  Runnable Task:run()
+        //startingpoint->dry-run. cv.signal() --?cv.await() -> fork.
+        //IO isolation
+
+
+        dryRunMethodGenerator.processClasses(filter);
+
+        StateRedirection.redirectAllClassesStates(filter);
+
+
+        LOG.info("Starting to add dry run fields to all classes");
+        for (SootClass sc : Scene.v().getApplicationClasses()) {
+            // Skip interfaces and phantom classes
+            if (sc.isInterface() || sc.isPhantom() || SootUtils.isDryRunClass(sc)) {
+                continue;
+            }
+            InjectDryRunTrace injectDryRunTrace = new InjectDryRunTrace(sc);
+            injectDryRunTrace.addNeedDryRunTraceField();
+        }
+
+        LOG.info("Starting to propagate baggage");
+
+
+        for (SootClass sc : Scene.v().getApplicationClasses()) {
+            // Skip interfaces and phantom classes
+            if(filter.shouldSkip(sc)) {
+                continue;
+            }
+
+            BaggagePropagation baggagePropagation = new BaggagePropagation(sc);
+            baggagePropagation.propagateBaggage();
+            //LOG.info("Processed class: {}", sc.getName());
+        }
+        StartingPointInstrumenter startingPointInstrumenter = new StartingPointInstrumenter(this.filter.getStartingPoints());
+        startingPointInstrumenter.instrumentStartingPoint();
 
         SootClass originalThreadClass = Scene.v().loadClassAndSupport("org.apache.hadoop.hbase.master.assignment.AssignmentManager$AssignmentThread");
         ThreadTransformer threadTransformer = new ThreadTransformer(originalThreadClass);

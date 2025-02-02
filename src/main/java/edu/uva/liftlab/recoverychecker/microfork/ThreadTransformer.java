@@ -2,6 +2,7 @@ package edu.uva.liftlab.recoverychecker.microfork;
 
 import edu.uva.liftlab.recoverychecker.generator.FastForwardMethodGenerator;
 import edu.uva.liftlab.recoverychecker.util.LocalGeneratorUtil;
+import fj.test.Bool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.*;
@@ -297,6 +298,10 @@ public class ThreadTransformer {
         Chain<SootField> fields = body.getMethod().getDeclaringClass().getFields();
 
         for(SootField field : fields) {
+            if(field.getName().contains("pendingAssignQueue") && !field.getName().contains("pendingAssignQueue$dryrun")){
+                continue;
+            }
+
             Type type = field.getType();
 
             if(field.getName().contains(IS_FAST_FORWARD_BAGGAGE)){
@@ -669,10 +674,20 @@ public class ThreadTransformer {
         Chain<Unit> units = body.getUnits();
         Unit lastIdentityStmt = getLastIdentityStmt(body);
 
-        Local conditionLocal = Jimple.v().newLocal("$isShadow", BooleanType.v());
-        body.getLocals().add(conditionLocal);
-
         List<Unit> tobeInserted = new ArrayList<>();
+        LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+
+        SootFieldRef originalThreadIdFieldRef = Scene.v().makeFieldRef(
+                sootClass,
+                ORIGINAL_THREAD_ID_FIELD,
+                LongType.v(),
+                false  // non-static field
+        );
+
+        Local conditionLocal = lg.generateLocalWithId(BooleanType.v(), "$isShadow");
+        Local originalThreadIdLocal = lg.generateLocalWithId(LongType.v(), "$originalThreadId");
+
 
         SootFieldRef isShadowFieldRef = Scene.v().makeFieldRef(
                 sootClass,
@@ -688,6 +703,13 @@ public class ThreadTransformer {
                         isShadowFieldRef
                 )
         ));
+        tobeInserted.add(Jimple.v().newAssignStmt(
+                originalThreadIdLocal,
+                Jimple.v().newInstanceFieldRef(
+                        body.getThisLocal(),
+                        originalThreadIdFieldRef
+                )
+        ));
 
 
         // 创建if语句，使用EqExpr进行比较
@@ -701,6 +723,44 @@ public class ThreadTransformer {
                                 IntConstant.v(0)  // false corresponds to 0
                         ),
                         endIf
+                )
+        );
+
+        Local threadLocal = lg.generateLocalWithId(RefType.v("java.lang.Thread"), "thread");
+        Local threadIdLocal = lg.generateLocalWithId(LongType.v(), "threadId");
+
+
+        SootMethod getCurrentThreadMethod = Scene.v().getMethod("<java.lang.Thread: java.lang.Thread currentThread()>");
+        SootMethod getIdMethod = Scene.v().getMethod("<java.lang.Thread: long getId()>");
+
+        // 先获取当前线程
+        AssignStmt assignThreadStmt = Jimple.v().newAssignStmt(threadLocal,
+                Jimple.v().newStaticInvokeExpr(getCurrentThreadMethod.makeRef()));
+
+        // 然后获取线程ID
+        AssignStmt assignIdStmt = Jimple.v().newAssignStmt(threadIdLocal,
+                Jimple.v().newVirtualInvokeExpr(threadLocal, getIdMethod.makeRef()));
+        tobeInserted.add(assignThreadStmt);
+        tobeInserted.add(assignIdStmt);
+
+        tobeInserted.add(
+                Jimple.v().newInvokeStmt(
+                        Jimple.v().newStaticInvokeExpr(
+                                Scene.v().makeMethodRef(
+                                        Scene.v().getSootClass(UTIL_CLASS_NAME),
+                                        "recordShadowThreadInMap",
+                                        Arrays.asList(
+                                                LongType.v(),
+                                                LongType.v()
+                                        ),
+                                        VoidType.v(),
+                                        true
+                                ),
+                                Arrays.asList(
+                                        originalThreadIdLocal,
+                                        threadIdLocal
+                                )
+                        )
                 )
         );
 
@@ -757,6 +817,49 @@ public class ThreadTransformer {
         return res;
     }
 
+
+    public void addRemoveFromStack(SootMethod method, Unit unit){
+        List<Unit> toBeInserted = new ArrayList<>();
+        Body body = method.retrieveActiveBody();
+        Chain<Unit> units = body.getUnits();
+
+        LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+        Local threadLocal = lg.generateLocalWithId(RefType.v("java.lang.Thread"), "thread");
+        Local threadIdLocal = lg.generateLocalWithId(LongType.v(), "threadId");
+
+
+        SootMethod getCurrentThreadMethod = Scene.v().getMethod("<java.lang.Thread: java.lang.Thread currentThread()>");
+        SootMethod getIdMethod = Scene.v().getMethod("<java.lang.Thread: long getId()>");
+
+        // 先获取当前线程
+        AssignStmt assignThreadStmt = Jimple.v().newAssignStmt(threadLocal,
+                Jimple.v().newStaticInvokeExpr(getCurrentThreadMethod.makeRef()));
+
+        // 然后获取线程ID
+        AssignStmt assignIdStmt = Jimple.v().newAssignStmt(threadIdLocal,
+                Jimple.v().newVirtualInvokeExpr(threadLocal, getIdMethod.makeRef()));
+
+        toBeInserted.add(assignThreadStmt);
+        toBeInserted.add(assignIdStmt);
+        toBeInserted.add(Jimple.v().newInvokeStmt(
+                Jimple.v().newStaticInvokeExpr(
+                        Scene.v().makeMethodRef(
+                                Scene.v().getSootClass(UTIL_CLASS_NAME),
+                                "popExecutingUnit",
+                                Arrays.asList(
+                                        LongType.v()
+                                ),
+                                VoidType.v(),
+                                true
+                        ),
+                        threadIdLocal
+                )
+        ));
+
+        units.insertAfter(toBeInserted, unit);
+        body.validate();
+    }
+
     public void hookMicroFork(){
         lockAnalyzer = new LockAnalyzer(originalClass);
         lockAnalyzer.analyze();
@@ -801,6 +904,7 @@ public class ThreadTransformer {
 
             for (Map.Entry<Unit, String> unitEntry : entry.getValue().entrySet()) {
                 instrumentTrackingCode(method, unitEntry.getKey(), unitEntry.getValue(), originalLocals);
+                addRemoveFromStack(method, unitEntry.getKey());
             }
             count++;
 //            if(count>1){
@@ -809,126 +913,157 @@ public class ThreadTransformer {
         }
 
 
-//        for(SootMethod method:fastForwardMethodGenerator.fastForwardMethods){
-//            List<Unit> gotoUnits = new ArrayList<>();
-//            Map<Unit, String> methodUnitIds = fastForwardMethodGenerator.methodUnitIds.get(method);
-//            for (Unit unit: methodUnitIds.keySet()) {
-//                Body body = method.retrieveActiveBody();
-//                Chain<Unit> units = body.getUnits();
-//                List<Unit> restoreCode = createRestoreCode(body, method, fastForwardMethodGenerator.methodToLocalsMap.get(method));
-//                LOG.info("restoreCode size is: " + restoreCode.size() +"in method: " + method.getSignature());
-//                List<Unit> fieldRestoreCode = createFieldRestoreCode(body, method);
-//                LOG.info("fieldRestoreCode size is: " + fieldRestoreCode.size() +"in method: " + method.getSignature());
-//                LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
-//                NopStmt skipRestoreLabel = Jimple.v().newNopStmt();
-//                NopStmt gotoStmt = Jimple.v().newNopStmt();
-//                List<Unit> tobeInserted = new ArrayList<>();
-//                tobeInserted.add(gotoStmt);
-//                Local isFastForward = lg.generateLocalWithId(BooleanType.v(), "$isFastForward");
-//                tobeInserted.add(Jimple.v().newAssignStmt(
-//                        isFastForward,
-//                        Jimple.v().newStaticInvokeExpr(
-//                                Scene.v().makeMethodRef(
-//                                        Scene.v().getSootClass(UTIL_CLASS_NAME),
-//                                        "isFastForward",
-//                                        Collections.emptyList(),
-//                                        BooleanType.v(),
-//                                        true
-//                                )
-//                        )
-//                ));
-//                tobeInserted.add(Jimple.v().newIfStmt(
-//                        Jimple.v().newEqExpr(
-//                                isFastForward,
-//                                IntConstant.v(0)  // false
-//                        ),
-//                        skipRestoreLabel
-//                ));
-//                tobeInserted.addAll(restoreCode);
-//                tobeInserted.addAll(fieldRestoreCode);
-//                tobeInserted.add(skipRestoreLabel);
-//                gotoUnits.add(gotoStmt);
+        for(SootMethod method:fastForwardMethodGenerator.fastForwardMethods){
+            List<Unit> gotoUnits = new ArrayList<>();
+            Map<Unit, String> methodUnitIds = fastForwardMethodGenerator.methodUnitIds.get(method);
+            for (Unit unit: methodUnitIds.keySet()) {
+                Body body = method.retrieveActiveBody();
+                Chain<Unit> units = body.getUnits();
+                List<Unit> restoreCode = createRestoreCode(body, method, fastForwardMethodGenerator.methodToLocalsMap.get(method));
+                LOG.info("restoreCode size is: " + restoreCode.size() +"in method: " + method.getSignature());
+                //List<Unit> fieldRestoreCode = createFieldRestoreCode(body, method);
+                //LOG.info("fieldRestoreCode size is: " + fieldRestoreCode.size() +"in method: " + method.getSignature());
+                LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+                NopStmt skipRestoreLabel = Jimple.v().newNopStmt();
+                NopStmt gotoStmt = Jimple.v().newNopStmt();
+                fastForwardMethodGenerator.divergeToGotoMap.put(gotoStmt, unit);
+                List<Unit> tobeInserted = new ArrayList<>();
+                tobeInserted.add(gotoStmt);
+                Local isFastForward = lg.generateLocalWithId(BooleanType.v(), "$isFastForward");
+                tobeInserted.add(Jimple.v().newAssignStmt(
+                        isFastForward,
+                        Jimple.v().newStaticInvokeExpr(
+                                Scene.v().makeMethodRef(
+                                        Scene.v().getSootClass(UTIL_CLASS_NAME),
+                                        "isFastForward",
+                                        Collections.emptyList(),
+                                        BooleanType.v(),
+                                        true
+                                )
+                        )
+                ));
+                tobeInserted.add(Jimple.v().newIfStmt(
+                        Jimple.v().newEqExpr(
+                                isFastForward,
+                                IntConstant.v(0)  // false
+                        ),
+                        skipRestoreLabel
+                ));
+                tobeInserted.addAll(restoreCode);
+                //tobeInserted.addAll(fieldRestoreCode);
+                tobeInserted.add(skipRestoreLabel);
+                gotoUnits.add(gotoStmt);
+
+                units.insertBefore(tobeInserted, unit);
+            }
+            methodToGotoUnits.put(method, gotoUnits);
+        }
 //
-//                units.insertBefore(tobeInserted, unit);
-//            }
-//            methodToGotoUnits.put(method, gotoUnits);
-//        }
+        for(SootMethod method:fastForwardMethodGenerator.fastForwardMethods){
+            List<Unit> gotoUnits = methodToGotoUnits.get(method);
+            Body body = method.retrieveActiveBody();
+
+            LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+            Chain<Unit> units = body.getUnits();
+            List<Unit> originalUnits = new ArrayList<>(body.getUnits());
+            Local isFastForward = lg.generateLocalWithId(BooleanType.v(), "$isFastForward");
+
+            List<Unit> tobeInserted = new ArrayList<>();
+            tobeInserted.add(Jimple.v().newAssignStmt(
+                    isFastForward,
+                    Jimple.v().newStaticInvokeExpr(
+                            Scene.v().makeMethodRef(
+                                    Scene.v().getSootClass(UTIL_CLASS_NAME),
+                                    "isFastForward",
+                                    Collections.emptyList(),
+                                    BooleanType.v(),
+                                    true
+                            )
+                    )
+            ));
+            Unit firstNonIdentityStmt = getFirstNonIdentityStmt(body);
+
+            tobeInserted.add(Jimple.v().newIfStmt(
+                    Jimple.v().newEqExpr(
+                            isFastForward,
+                            IntConstant.v(0)
+                    ),
+                    firstNonIdentityStmt
+            ));
+            Local gotoPosition = lg.generateLocalWithId(IntType.v(), "$gotoPosition");
+            Local threadLocal = lg.generateLocalWithId(RefType.v("java.lang.Thread"), "thread");
+            Local threadIdLocal = lg.generateLocalWithId(LongType.v(), "threadId");
+
+
+            SootMethod getCurrentThreadMethod = Scene.v().getMethod("<java.lang.Thread: java.lang.Thread currentThread()>");
+            SootMethod getIdMethod = Scene.v().getMethod("<java.lang.Thread: long getId()>");
+
+            // 先获取当前线程
+            AssignStmt assignThreadStmt = Jimple.v().newAssignStmt(threadLocal,
+                    Jimple.v().newStaticInvokeExpr(getCurrentThreadMethod.makeRef()));
+
+            // 然后获取线程ID
+            AssignStmt assignIdStmt = Jimple.v().newAssignStmt(threadIdLocal,
+                    Jimple.v().newVirtualInvokeExpr(threadLocal, getIdMethod.makeRef()));
+            tobeInserted.add(assignThreadStmt);
+            tobeInserted.add(assignIdStmt);
+            tobeInserted.add(Jimple.v().newAssignStmt(
+                    gotoPosition,
+                    Jimple.v().newStaticInvokeExpr(
+                            Scene.v().makeMethodRef(
+                                    Scene.v().getSootClass(UTIL_CLASS_NAME),
+                                    "getExecutingUnit",
+                                    Arrays.asList(
+                                            LongType.v()
+                                    ),
+                                    IntType.v(),
+                                    true
+                            ),
+                            threadIdLocal
+                    )
+            ));
+
+            List<IntConstant> lookupValues = new ArrayList<>();
+            List<Unit> lookupTargets = new ArrayList<>(gotoUnits.size());
+
+            for(int i = 0; i < gotoUnits.size(); i++){
+                lookupTargets.add(null);
+            }
+
+
+            for(int i = 0; i < gotoUnits.size(); i++){
+                Unit gotoUnit = gotoUnits.get(i);
+                LOG.info("goto unit id is"+fastForwardMethodGenerator.methodUnitIds.get(method).get(fastForwardMethodGenerator.divergeToGotoMap.get(gotoUnit)));
+                int index = Integer.valueOf(fastForwardMethodGenerator.methodUnitIds.get(method).get(fastForwardMethodGenerator.divergeToGotoMap.get(gotoUnit)));
+                lookupTargets.set(index, gotoUnit);
+            }
+
+            for (int i = 0; i < gotoUnits.size(); i++) {
+                lookupValues.add(IntConstant.v(i));
+            }
+
+            LookupSwitchStmt switchStmt = Jimple.v().newLookupSwitchStmt(
+                    gotoPosition,
+                    lookupValues,
+                    lookupTargets,
+                    gotoUnits.get(0)
+            );
+
+            tobeInserted.add(switchStmt);
+
+            Unit lastIdentitiyStmt = getLastIdentityStmt(body);
+            assert lastIdentitiyStmt != null;
+            units.insertAfter(tobeInserted, lastIdentitiyStmt);
+        }
 //
-//        for(SootMethod method:fastForwardMethodGenerator.fastForwardMethods){
-//            List<Unit> gotoUnits = methodToGotoUnits.get(method);
-//            Body body = method.retrieveActiveBody();
+        for (SootMethod sootMethod : fastForwardMethodGenerator.fastForwardMethods){
+            initializeLocalsForMethod(sootMethod.retrieveActiveBody());
+        }
 //
-//            LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
-//            Chain<Unit> units = body.getUnits();
-//            List<Unit> originalUnits = new ArrayList<>(body.getUnits());
-//            Local isFastForward = lg.generateLocalWithId(BooleanType.v(), "$isFastForward");
-//
-//            List<Unit> tobeInserted = new ArrayList<>();
-//            tobeInserted.add(Jimple.v().newAssignStmt(
-//                    isFastForward,
-//                    Jimple.v().newStaticInvokeExpr(
-//                            Scene.v().makeMethodRef(
-//                                    Scene.v().getSootClass(UTIL_CLASS_NAME),
-//                                    "isFastForward",
-//                                    Collections.emptyList(),
-//                                    BooleanType.v(),
-//                                    true
-//                            )
-//                    )
-//            ));
-//            Unit firstNonIdentityStmt = getFirstNonIdentityStmt(body);
-//
-//            tobeInserted.add(Jimple.v().newIfStmt(
-//                    Jimple.v().newEqExpr(
-//                            isFastForward,
-//                            IntConstant.v(0)
-//                    ),
-//                    firstNonIdentityStmt
-//            ));
-//            Local gotoPosition = lg.generateLocalWithId(IntType.v(), "$gotoPosition");
-//            tobeInserted.add(Jimple.v().newAssignStmt(
-//                    gotoPosition,
-//                    Jimple.v().newStaticInvokeExpr(
-//                            Scene.v().makeMethodRef(
-//                                    Scene.v().getSootClass(UTIL_CLASS_NAME),
-//                                    "getExecutingUnit",
-//                                    Collections.emptyList(),
-//                                    IntType.v(),
-//                                    true
-//                            )
-//                    )
-//            ));
-//
-//            List<IntConstant> lookupValues = new ArrayList<>();
-//            List<Unit> lookupTargets = new ArrayList<>();
-//
-//            for (int i = 0; i < gotoUnits.size(); i++) {
-//                lookupValues.add(IntConstant.v(i));
-//                lookupTargets.add(gotoUnits.get(i));
-//            }
-//
-//            LookupSwitchStmt switchStmt = Jimple.v().newLookupSwitchStmt(
-//                    gotoPosition,
-//                    lookupValues,
-//                    lookupTargets,
-//                    gotoUnits.get(0)
-//            );
-//
-//            tobeInserted.add(switchStmt);
-//
-//            Unit lastIdentitiyStmt = getLastIdentityStmt(body);
-//            assert lastIdentitiyStmt != null;
-//            units.insertAfter(tobeInserted, lastIdentitiyStmt);
-//        }
-//
-//        for (SootMethod sootMethod : fastForwardMethodGenerator.fastForwardMethods){
-//            initializeLocalsForMethod(sootMethod.retrieveActiveBody());
-//        }
-//
-//        redirectToShadowRun(originalClass);
-//        fastForwardMethodGenerator.replaceWithFastForward();
-//        instrumentShadowVersionMethods();
-//        resetBaggage();
+        redirectToShadowRun(originalClass);
+        fastForwardMethodGenerator.replaceWithFastForward();
+        instrumentShadowVersionMethods();
+        resetBaggage();
     }
 
     public void resetBaggage(){
@@ -1158,10 +1293,26 @@ public class ThreadTransformer {
         LOG.info("Instrumenting method: " + method.getSignature() + " unit: " + unit + " id: " + unitId);
         Body body = method.retrieveActiveBody();
         Chain<Unit> units = body.getUnits();
+
         LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+        Local threadLocal = lg.generateLocalWithId(RefType.v("java.lang.Thread"), "thread");
+        Local threadIdLocal = lg.generateLocalWithId(LongType.v(), "threadId");
+
+
+        SootMethod getCurrentThreadMethod = Scene.v().getMethod("<java.lang.Thread: java.lang.Thread currentThread()>");
+        SootMethod getIdMethod = Scene.v().getMethod("<java.lang.Thread: long getId()>");
+
+        // 先获取当前线程
+        AssignStmt assignThreadStmt = Jimple.v().newAssignStmt(threadLocal,
+                Jimple.v().newStaticInvokeExpr(getCurrentThreadMethod.makeRef()));
+
+        // 然后获取线程ID
+        AssignStmt assignIdStmt = Jimple.v().newAssignStmt(threadIdLocal,
+                Jimple.v().newVirtualInvokeExpr(threadLocal, getIdMethod.makeRef()));
 
         List<Unit> trackingCode = new ArrayList<>();
-
+        trackingCode.add(assignThreadStmt);
+        trackingCode.add(assignIdStmt);
 
         trackingCode.add(Jimple.v().newInvokeStmt(
                 Jimple.v().newStaticInvokeExpr(
@@ -1170,14 +1321,16 @@ public class ThreadTransformer {
                                 "recordExecutingUnit",
                                 Arrays.asList(
                                         RefType.v("java.lang.String"),
-                                        RefType.v("java.lang.String")
+                                        RefType.v("java.lang.String"),
+                                        LongType.v()
                                 ),
                                 VoidType.v(),
                                 true
                         ),
                         Arrays.asList(
                                 StringConstant.v(method.getSignature()),
-                                StringConstant.v(unitId)
+                                StringConstant.v(unitId),
+                                threadIdLocal
                         )
                 )
         ));

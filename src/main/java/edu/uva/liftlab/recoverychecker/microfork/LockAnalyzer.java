@@ -156,8 +156,12 @@ public class LockAnalyzer {
             Set<Unit> units = entry.getValue();
             Map<Unit, String> unitIds = new HashMap<>();
 
+            List<Unit> orderedUnits = new ArrayList<>(method.getActiveBody().getUnits());
+
+            orderedUnits.retainAll(units);
+            assert orderedUnits.size() == units.size();
             int counter = 0;
-            for (Unit unit : units) {
+            for (Unit unit : orderedUnits) {
                 String unitId = String.valueOf(counter++);
                 unitIds.put(unit, unitId);
             }

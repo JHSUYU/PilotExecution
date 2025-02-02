@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import static edu.uva.liftlab.recoverychecker.util.Constants.STATE_ISOLATION_CLASS;
 import static edu.uva.liftlab.recoverychecker.util.SootUtils.printLog4j;
 import static edu.uva.liftlab.recoverychecker.util.SootUtils.printValue;
 
@@ -109,7 +110,7 @@ public class UnitGenerator {
 
         // 获取深拷贝方法引用
         SootMethodRef shallowCopyMethod = Scene.v().makeMethodRef(
-                Scene.v().getSootClass("org.apache.cassandra.utils.dryrun.DryRunManager"),
+                Scene.v().getSootClass(STATE_ISOLATION_CLASS),
                 "shallowCopy",
                 Arrays.asList(objectType, objectType, BooleanType.v()),
                 objectType,
