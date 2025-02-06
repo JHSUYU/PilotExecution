@@ -12,6 +12,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static edu.uva.liftlab.recoverychecker.util.Constants.PILOT_UTIL_CLASS_NAME;
+
 public abstract class ParameterWrapper {
     SootClass sootClass;
 
@@ -64,7 +66,7 @@ public abstract class ParameterWrapper {
                         scopeLocal,
                         Jimple.v().newStaticInvokeExpr(
                                 Scene.v().makeMethodRef(
-                                        Scene.v().loadClassAndSupport("org.apache.cassandra.utils.dryrun.TraceUtil"),
+                                        Scene.v().loadClassAndSupport(PILOT_UTIL_CLASS_NAME),
                                         "getDryRunTraceScope",
                                         Collections.singletonList(BooleanType.v()),
                                         scopeLocal.getType(),

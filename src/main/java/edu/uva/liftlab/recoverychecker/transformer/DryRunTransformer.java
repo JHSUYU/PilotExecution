@@ -172,20 +172,20 @@ public class DryRunTransformer extends SceneTransformer {
 
         for (SootClass sc : Scene.v().getApplicationClasses()) {
             // Skip interfaces and phantom classes
-            if(filter.shouldSkip(sc)) {
+            if(filter.shouldSkip(sc) && !filter.isInWhiteList(sc)) {
                 continue;
             }
 
-            BaggagePropagation baggagePropagation = new BaggagePropagation(sc);
+            BaggagePropagation baggagePropagation = new BaggagePropagation(sc,filter);
             baggagePropagation.propagateBaggage();
             //LOG.info("Processed class: {}", sc.getName());
         }
-        StartingPointInstrumenter startingPointInstrumenter = new StartingPointInstrumenter(this.filter.getStartingPoints());
-        startingPointInstrumenter.instrumentStartingPoint();
-
-        SootClass originalThreadClass = Scene.v().loadClassAndSupport("org.apache.hadoop.hbase.master.assignment.AssignmentManager$AssignmentThread");
-        ThreadTransformer threadTransformer = new ThreadTransformer(originalThreadClass);
-        threadTransformer.hookMicroFork();
+//        StartingPointInstrumenter startingPointInstrumenter = new StartingPointInstrumenter(this.filter.getStartingPoints());
+//        startingPointInstrumenter.instrumentStartingPoint();
+//
+//        SootClass originalThreadClass = Scene.v().loadClassAndSupport("org.apache.hadoop.hbase.master.assignment.AssignmentManager$AssignmentThread");
+//        ThreadTransformer threadTransformer = new ThreadTransformer(originalThreadClass);
+//        threadTransformer.hookMicroFork();
     }
 
 }

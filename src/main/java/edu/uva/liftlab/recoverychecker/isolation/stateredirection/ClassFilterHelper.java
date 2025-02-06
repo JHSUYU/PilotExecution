@@ -38,6 +38,38 @@ public class ClassFilterHelper {
             return true;
         }
 
+//        boolean isInWhiteList = isClassInList(sc, whiteList);
+//        if (isInWhiteList) {
+//            LOG.debug("Class {} is in whitelist, not skipping", sc.getName());
+//            return false;
+//        }
+
+        if (isDryRunClass(sc)) {
+            LOG.debug("Skipping dry run class: {}", sc.getName());
+            return true;
+        }
+
+        if (isClassInList(sc, blackList)) {
+            LOG.debug("Class {} is in blacklist, skipping", sc.getName());
+            return true;
+        }
+
+        if (isClassInList(sc, manualInstrumentation)) {
+            LOG.debug("Class {} is manually instrumented, skipping", sc.getName());
+            return true;
+        }
+
+        return false;
+    }
+
+
+    public boolean shouldSkipForTracing(SootClass sc) {
+
+        if (sc.isInterface() || sc.isPhantom()) {
+            LOG.debug("Skipping interface or phantom class: {}", sc.getName());
+            return true;
+        }
+
         boolean isInWhiteList = isClassInList(sc, whiteList);
         if (isInWhiteList) {
             LOG.debug("Class {} is in whitelist, not skipping", sc.getName());
@@ -80,7 +112,15 @@ public class ClassFilterHelper {
     }
 
     public boolean isInWhiteList(SootClass sc) {
-        return isClassInList(sc, whiteList);
+        boolean res = isClassInList(sc, whiteList);
+        //print white list
+        for(String s: whiteList){
+            LOG.info("WhiteList: {}", s);
+        }
+        if (res) {
+            LOG.info("Class {} is in whitelist", sc.getName());
+        }
+        return res;
     }
 
     public boolean isInBlackList(SootClass sc) {

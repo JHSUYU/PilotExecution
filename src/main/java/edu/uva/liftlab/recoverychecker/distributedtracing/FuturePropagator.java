@@ -1,5 +1,6 @@
 package edu.uva.liftlab.recoverychecker.distributedtracing;
 
+import com.google.common.util.concurrent.ListenableFutureTask;
 import edu.uva.liftlab.recoverychecker.util.LocalGeneratorUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,14 +58,16 @@ public class FuturePropagator{
         this.sootClass = sootClass;
     }
 
-    public void wrapFutureTaskParameter(){
+    public void propagateContext(){
         for(SootMethod method : sootClass.getMethods()){
             if(!method.getName().endsWith(INSTRUMENTATION_SUFFIX)){
                 continue;
             }
             GoogleFuturePropagator googleFuturePropagator = new GoogleFuturePropagator();
-            googleFuturePropagator.wrapGoogleFuturesTransformAsync(method);
-            googleFuturePropagator.wrapGoogleFuturesCallBack(method);
+            googleFuturePropagator.wrapGoogleFuturesTransformAsyncWithAPI(method);
+            googleFuturePropagator.wrapGoogleFuturesCallBackWithAPI(method);
+            googleFuturePropagator.wrapListenableFutureTaskAddListenerWithAPI(method);
+
         }
     }
 
@@ -78,6 +81,7 @@ public class FuturePropagator{
             SootMethod method = invoke.getMethod();
             return method.getDeclaringClass().getName().equals("com.google.common.util.concurrent.Futures")
                     && !invoke.getArgs().isEmpty()
+                    && method.getName().equals("addCallback")
                     && invoke.getArgs().stream().anyMatch(arg ->
                     arg.getType() instanceof RefType &&
                             implementsFutureCallBack(((RefType) arg.getType()).getSootClass()));
@@ -163,6 +167,470 @@ public class FuturePropagator{
             }
         }
 
+        protected void wrapGoogleFuturesCallBackWithAPI(SootMethod method) {
+            if (!method.hasActiveBody()) {
+                return;
+            }
+
+            Body body = method.retrieveActiveBody();
+            UnitPatchingChain units = body.getUnits();
+            List<Unit> originalUnits = new ArrayList<>(units);
+            LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+            for (Unit u : originalUnits) {
+                if (u instanceof AssignStmt) {
+                    AssignStmt stmt = (AssignStmt) u;
+                    Value rightOp = stmt.getRightOp();
+                    if (rightOp instanceof InvokeExpr && shouldBeWrapped4Callback((InvokeExpr) rightOp)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in assignment: {}", stmt);
+
+                        InvokeExpr invoke = (InvokeExpr) rightOp;
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(2); // executor is the third argument
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(2, wrappedExecutor); // Replace executor argument
+
+                        StaticInvokeExpr newInvoke = Jimple.v().newStaticInvokeExpr(
+                                invoke.getMethod().makeRef(),
+                                newArgs
+                        );
+                        stmt.setRightOp(newInvoke);
+                    }
+                } else if (u instanceof InvokeStmt) {
+                    InvokeExpr invoke = ((InvokeStmt) u).getInvokeExpr();
+                    if (shouldBeWrapped4Callback(invoke)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in invoke statement: {}", u);
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(2); // executor is the third argument
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(2, wrappedExecutor); // Replace executor argument
+
+                        StaticInvokeExpr newInvoke = Jimple.v().newStaticInvokeExpr(
+                                invoke.getMethod().makeRef(),
+                                newArgs
+                        );
+                        ((InvokeStmt) u).setInvokeExpr(newInvoke);
+                    }
+                }
+            }
+        }
+
+        protected void wrapGoogleFuturesTransformAsyncWithAPI(SootMethod method) {
+            if (!method.hasActiveBody()) {
+                return;
+            }
+
+            Body body = method.retrieveActiveBody();
+            UnitPatchingChain units = body.getUnits();
+            List<Unit> originalUnits = new ArrayList<>(units);
+            LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+            for (Unit u : originalUnits) {
+                if (u instanceof AssignStmt) {
+                    AssignStmt stmt = (AssignStmt) u;
+                    Value rightOp = stmt.getRightOp();
+                    if (rightOp instanceof InvokeExpr && shouldBeWrapped4TransformAsync((InvokeExpr) rightOp)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in transform async assignment: {}", stmt);
+
+                        InvokeExpr invoke = (InvokeExpr) rightOp;
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(2); // executor is the third argument
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(2, wrappedExecutor); // Replace executor argument
+
+                        StaticInvokeExpr newInvoke = Jimple.v().newStaticInvokeExpr(
+                                invoke.getMethod().makeRef(),
+                                newArgs
+                        );
+                        stmt.setRightOp(newInvoke);
+                    }
+                } else if (u instanceof InvokeStmt) {
+                    InvokeExpr invoke = ((InvokeStmt) u).getInvokeExpr();
+                    if (shouldBeWrapped4TransformAsync(invoke)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in transform async invoke statement: {}", u);
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(2); // executor is the third argument
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(2, wrappedExecutor); // Replace executor argument
+
+                        StaticInvokeExpr newInvoke = Jimple.v().newStaticInvokeExpr(
+                                invoke.getMethod().makeRef(),
+                                newArgs
+                        );
+                        ((InvokeStmt) u).setInvokeExpr(newInvoke);
+                    }
+                }
+            }
+        }
+
+        protected void wrapListenableFutureTaskAddListenerWithAPI(SootMethod method) {
+            if (!method.hasActiveBody()) {
+                return;
+            }
+
+            Body body = method.retrieveActiveBody();
+            UnitPatchingChain units = body.getUnits();
+            List<Unit> originalUnits = new ArrayList<>(units);
+            LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+            for (Unit u : originalUnits) {
+                if (u instanceof AssignStmt) {
+                    AssignStmt stmt = (AssignStmt) u;
+                    Value rightOp = stmt.getRightOp();
+                    if (rightOp instanceof InvokeExpr && shouldBeWrapped4AddListener((InvokeExpr) rightOp)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in addListener assignment: {}", stmt);
+
+                        InvokeExpr invoke = (InvokeExpr) rightOp;
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(1); // executor is the second argument in addListener
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        // Store base in a local
+                        Local baseLocal = null;
+                        if (invoke instanceof VirtualInvokeExpr || invoke instanceof InterfaceInvokeExpr) {
+                            Value base = ((InstanceInvokeExpr) invoke).getBase();
+                            baseLocal = lg.generateLocal(base.getType());
+                            newUnits.add(Jimple.v().newAssignStmt(baseLocal, base));
+                        }
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(1, wrappedExecutor); // Replace executor argument
+
+                        // Create appropriate invoke expression based on the original type
+                        InvokeExpr newInvoke;
+                        if (invoke instanceof VirtualInvokeExpr) {
+                            newInvoke = Jimple.v().newVirtualInvokeExpr(
+                                    baseLocal,
+                                    invoke.getMethod().makeRef(),
+                                    newArgs
+                            );
+                        } else if (invoke instanceof InterfaceInvokeExpr) {
+                            newInvoke = Jimple.v().newInterfaceInvokeExpr(
+                                    baseLocal,
+                                    invoke.getMethod().makeRef(),
+                                    newArgs
+                            );
+                        } else {
+                            // Shouldn't happen for addListener, but handle just in case
+                            continue;
+                        }
+
+                        stmt.setRightOp(newInvoke);
+                    }
+                } else if (u instanceof InvokeStmt) {
+                    InvokeExpr invoke = ((InvokeStmt) u).getInvokeExpr();
+                    if (shouldBeWrapped4AddListener(invoke)) {
+                        List<Unit> newUnits = new ArrayList<>();
+                        LOG.info("Wrapping executor parameter in addListener invoke statement: {}", u);
+
+                        // Get Context class
+                        SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
+
+                        // Generate local for current context
+                        Local contextLocal = lg.generateLocal(RefType.v(contextClass));
+
+                        // Get Context.current()
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        contextLocal,
+                                        Jimple.v().newStaticInvokeExpr(
+                                                contextClass.getMethod("current",
+                                                        Collections.emptyList(),
+                                                        RefType.v("io.opentelemetry.context.Context")
+                                                ).makeRef()
+                                        )
+                                )
+                        );
+
+                        // Store original executor
+                        Value executorArg = invoke.getArg(1); // executor is the second argument in addListener
+                        Local tempExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(Jimple.v().newAssignStmt(tempExecutor, executorArg));
+
+                        // Create wrapped executor using Context.wrap()
+                        Local wrappedExecutor = lg.generateLocal(RefType.v("java.util.concurrent.Executor"));
+                        newUnits.add(
+                                Jimple.v().newAssignStmt(
+                                        wrappedExecutor,
+                                        Jimple.v().newInterfaceInvokeExpr(
+                                                contextLocal,
+                                                contextClass.getMethod("wrap",
+                                                        Collections.singletonList(RefType.v("java.util.concurrent.Executor")),
+                                                        RefType.v("java.util.concurrent.Executor")
+                                                ).makeRef(),
+                                                tempExecutor
+                                        )
+                                )
+                        );
+
+                        // Store base in a local
+                        Local baseLocal = null;
+                        if (invoke instanceof VirtualInvokeExpr || invoke instanceof InterfaceInvokeExpr) {
+                            Value base = ((InstanceInvokeExpr) invoke).getBase();
+                            baseLocal = lg.generateLocal(base.getType());
+                            newUnits.add(Jimple.v().newAssignStmt(baseLocal, base));
+                        }
+
+                        units.insertBefore(newUnits, u);
+
+                        // Create new invoke with wrapped executor
+                        List<Value> newArgs = new ArrayList<>(invoke.getArgs());
+                        newArgs.set(1, wrappedExecutor); // Replace executor argument
+
+                        // Create appropriate invoke expression based on the original type
+                        InvokeExpr newInvoke;
+                        if (invoke instanceof VirtualInvokeExpr) {
+                            newInvoke = Jimple.v().newVirtualInvokeExpr(
+                                    baseLocal,
+                                    invoke.getMethod().makeRef(),
+                                    newArgs
+                            );
+                        } else if (invoke instanceof InterfaceInvokeExpr) {
+                            newInvoke = Jimple.v().newInterfaceInvokeExpr(
+                                    baseLocal,
+                                    invoke.getMethod().makeRef(),
+                                    newArgs
+                            );
+                        } else {
+                            // Shouldn't happen for addListener, but handle just in case
+                            continue;
+                        }
+
+                        ((InvokeStmt) u).setInvokeExpr(newInvoke);
+                    }
+                }
+            }
+        }
+
+        private boolean shouldBeWrapped4AddListener(InvokeExpr invoke) {
+            if (!(invoke instanceof InstanceInvokeExpr)) {
+                return false;
+            }
+
+            SootMethod method = invoke.getMethod();
+
+            // Check if this is an addListener call
+            return method.getName().equals("addListener") &&
+                    method.getParameterCount() == 2 &&
+                    method.getParameterType(0).toString().equals("java.lang.Runnable") &&
+                    method.getParameterType(1).toString().equals("java.util.concurrent.Executor") &&
+                    (invoke.getMethod().getDeclaringClass().getName().equals("com.google.common.util.concurrent.ListenableFutureTask") ||
+                            invoke.getMethod().getDeclaringClass().implementsInterface("com.google.common.util.concurrent.ListenableFuture"));
+        }
+
         protected void wrapGoogleFuturesTransformAsync(SootMethod method) {
             if (!method.hasActiveBody()) {
                 return;
@@ -210,8 +678,7 @@ public class FuturePropagator{
             SootMethod method = invoke.getMethod();
             return method.getDeclaringClass().getName().equals("com.google.common.util.concurrent.Futures")
                     && method.getName().equals("transformAsync")
-                    && !invoke.getArgs().isEmpty()
-                    && invoke.getArg(1).getType().toString().contains("AsyncFunction");
+                    && !invoke.getArgs().isEmpty();
         }
 
         private Local wrapAsyncFunction(InvokeExpr invoke, LocalGeneratorUtil lg, Body body, List<Unit> newUnits) {

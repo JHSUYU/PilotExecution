@@ -10,6 +10,8 @@ public class Constants {
 
     public static final String INSTRUMENTATION_SUFFIX = "$instrumentation";
 
+    public static final String INSTRUMENTATION_SUFFIX_FOR_INIT_FUNC = "_$instrumentation";
+
     public static final String BLACK_LIST = "blacklist.classes";
 
     public static final String WHITE_LIST = "whitelist.classes";
@@ -45,6 +47,10 @@ public class Constants {
     public static final String mode = "SEDA";
 
     public static final String STATE_ISOLATION_CLASS = "org.pilot.State";
+
+    public static final String SHOULD_BE_CONTEXT_WRAP_METHOD_SIGNATURE = "boolean shouldBeContextWrap(java.lang.Runnable,java.util.concurrent.Executor)";
+
+    public static final String PILOT_UTIL_CLASS_NAME = "org.pilot.PilotUtil";
 
 
 }

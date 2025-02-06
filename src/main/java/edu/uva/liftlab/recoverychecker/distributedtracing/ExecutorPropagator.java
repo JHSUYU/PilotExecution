@@ -1,18 +1,17 @@
 package edu.uva.liftlab.recoverychecker.distributedtracing;
 
+import edu.uva.liftlab.recoverychecker.isolation.stateredirection.ClassFilterHelper;
 import edu.uva.liftlab.recoverychecker.util.LocalGeneratorUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.*;
 import soot.jimple.*;
-import soot.jimple.toolkits.callgraph.Units;
 
 import java.util.*;
 
 import static edu.uva.liftlab.recoverychecker.distributedtracing.utils.TracingUtil.*;
-import static edu.uva.liftlab.recoverychecker.util.Constants.INSTRUMENTATION_SUFFIX;
+import static edu.uva.liftlab.recoverychecker.util.Constants.*;
 import static edu.uva.liftlab.recoverychecker.util.SootUtils.getDryRunTraceFieldName;
-import static edu.uva.liftlab.recoverychecker.util.SootUtils.printLog4j;
 
 public class ExecutorPropagator {
     public static final List<String> executorServiceTypes = Arrays.asList(
@@ -22,21 +21,27 @@ public class ExecutorPropagator {
     );
     private static final Logger LOG = LoggerFactory.getLogger(ExecutorPropagator.class);
     public SootClass sootClass;
+    public ClassFilterHelper filterHelper;
     ExecutorPropagator(SootClass sootClass) {
         this.sootClass = sootClass;
     }
 
-    public void wrapExecutorParameter(){
+    ExecutorPropagator(SootClass sootClass, ClassFilterHelper filterHelper) {
+        this.sootClass = sootClass;
+        this.filterHelper = filterHelper;
+    }
+
+    public void propagateContext(){
         for(SootMethod method : sootClass.getMethods()) {
             LOG.info("Propagating baggage for method: {}", method.getName());
-            if(!method.getName().endsWith(INSTRUMENTATION_SUFFIX)){
+            if(!method.getName().endsWith(INSTRUMENTATION_SUFFIX) &&! filterHelper.isInWhiteList(method.getDeclaringClass())){
                 continue;
             }
-            this.wrapExecutorParameter(method);
+            this.wrapExecutorRunnableParameter(method);
         }
     }
 
-    protected void wrapExecutorParameter(SootMethod method) {
+    protected void wrapExecutorRunnableParameter(SootMethod method) {
         if (!method.hasActiveBody()) {
             return;
         }
@@ -114,9 +119,9 @@ public class ExecutorPropagator {
 
 
     private Local wrapRunnable(InstanceInvokeExpr instanceInvoke, LocalGeneratorUtil lg, Body body, List<Unit> newUnits){
-        SootClass traceUtilClass = Scene.v().getSootClass("org.apache.cassandra.utils.dryrun.TraceUtil");
+        SootClass traceUtilClass = Scene.v().getSootClass(PILOT_UTIL_CLASS_NAME);
         //print sootmethod in traceUtilClass
-        SootMethod shouldBeContextWrapMethod = traceUtilClass.getMethod("boolean shouldBeContextWrap(java.lang.Runnable,java.util.concurrent.Executor)");
+        SootMethod shouldBeContextWrapMethod = traceUtilClass.getMethod(SHOULD_BE_CONTEXT_WRAP_METHOD_SIGNATURE);
 
         Value originalRunnable = instanceInvoke.getArg(0);
         Local tempRunnable = lg.generateLocal(originalRunnable.getType());
@@ -144,7 +149,8 @@ public class ExecutorPropagator {
         Local wrappedRunnable = wrapExecutorRunnableParameterWithContext(lg, body, tempRunnable, contextWrapUnits);
         contextWrapUnits.add(Jimple.v().newAssignStmt(tempRunnable, wrappedRunnable));
 
-        List<Unit> trycatchWrapUnits = wrapExecutorRunnableParameterWithTryCatch(tempRunnable);
+        //List<Unit> trycatchWrapUnits = wrapExecutorRunnableParameterWithTryCatch(tempRunnable);
+        List<Unit> trycatchWrapUnits = new ArrayList<>();
 
         NopStmt endNop = Jimple.v().newNopStmt();
         NopStmt nop = Jimple.v().newNopStmt();
@@ -212,7 +218,6 @@ public class ExecutorPropagator {
     }
 
     private Local wrapExecutorRunnableParameterWithContext(LocalGeneratorUtil lg, Body body, Local runnableArg, List<Unit> res) {
-
         // Get Context class
         SootClass contextClass = Scene.v().getSootClass("io.opentelemetry.context.Context");
 

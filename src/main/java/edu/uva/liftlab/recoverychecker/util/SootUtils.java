@@ -55,6 +55,18 @@ public class SootUtils {
         return true;
     }
 
+    public static String getInstrumnentationMethodName(SootMethod method){
+        if(method.isConstructor()){
+            assert method.getName().equals("<init>");
+            return "init"+INSTRUMENTATION_SUFFIX_FOR_INIT_FUNC;
+        } else if(method.isStaticInitializer()){
+            assert method.getName().equals("<clinit>");
+            return "clinit"+INSTRUMENTATION_SUFFIX_FOR_INIT_FUNC;
+        }else{
+            return method.getName()+INSTRUMENTATION_SUFFIX;
+        }
+    }
+
     public static boolean shouldSkipClass(SootClass sc, String configPath) {
         if (sc.isInterface() || sc.isPhantom()) {
             return true;
@@ -93,10 +105,17 @@ public class SootUtils {
     }
 
     public static boolean originalMethodShouldBeInstrumented(SootMethod originalMethod, SootClass sootClass) {
-        if (originalMethod.isStaticInitializer() || originalMethod.isConstructor() || originalMethod.isNative() || originalMethod.isAbstract()
+        if (originalMethod.isStaticInitializer() ||  originalMethod.isNative() || originalMethod.isAbstract()
                 || sootClass.isEnum()){
             return false;
         }
+
+        if(originalMethod.isConstructor() && !sootClass.getName().contains("org.apache.cassandra.locator.AbstractReplicaCollection")){
+            return false;
+        }
+//        if (originalMethod.isNative() || originalMethod.isAbstract() || sootClass.isEnum() || originalMethod.isStaticInitializer()){
+//            return false;
+//        }
         return true;
     }
     public static int getLine(Unit unit) {
@@ -594,7 +613,7 @@ public class SootUtils {
         // 创建 dryRunLog 方法调用
         StaticInvokeExpr dryRunLogExpr = Jimple.v().newStaticInvokeExpr(
                 Scene.v().makeMethodRef(
-                        Scene.v().loadClassAndSupport("org.apache.cassandra.utils.dryrun.TraceUtil"),
+                        Scene.v().loadClassAndSupport(PILOT_UTIL_CLASS_NAME),
                         "dryRunLog",
                         Collections.singletonList(RefType.v("java.lang.String")),
                         VoidType.v(),
@@ -616,7 +635,7 @@ public class SootUtils {
 
         StaticInvokeExpr printMessageExpr = Jimple.v().newStaticInvokeExpr(
                 Scene.v().makeMethodRef(
-                        Scene.v().loadClassAndSupport("org.apache.cassandra.utils.dryrun.TraceUtil"),
+                        Scene.v().loadClassAndSupport(PILOT_UTIL_CLASS_NAME),
                         "dryRunLog",
                         Collections.singletonList(RefType.v("java.lang.String")),
                         VoidType.v(),
@@ -660,7 +679,7 @@ public class SootUtils {
 
             StaticInvokeExpr printNullCheckExpr = Jimple.v().newStaticInvokeExpr(
                     Scene.v().makeMethodRef(
-                            Scene.v().loadClassAndSupport("org.apache.cassandra.utils.dryrun.TraceUtil"),
+                            Scene.v().loadClassAndSupport(PILOT_UTIL_CLASS_NAME),
                             "dryRunLog",
                             Collections.singletonList(RefType.v("java.lang.String")),
                             VoidType.v(),
@@ -691,7 +710,7 @@ public class SootUtils {
             // 打印值
             StaticInvokeExpr printValueExpr = Jimple.v().newStaticInvokeExpr(
                     Scene.v().makeMethodRef(
-                            Scene.v().loadClassAndSupport("org.apache.cassandra.utils.dryrun.TraceUtil"),
+                            Scene.v().loadClassAndSupport(PILOT_UTIL_CLASS_NAME),
                             "dryRunLog",
                             Collections.singletonList(RefType.v("java.lang.String")),
                             VoidType.v(),

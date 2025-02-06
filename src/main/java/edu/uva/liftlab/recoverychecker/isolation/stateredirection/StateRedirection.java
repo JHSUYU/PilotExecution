@@ -95,16 +95,13 @@ public class StateRedirection {
         }
     }
 
-    /**
-     * 判断是否应该对方法进行插桩
-     */
     private boolean shouldInstrumentMethod(SootMethod method) {
         if (method.isAbstract() || method.isNative()) {
             LOG.debug("Skipping abstract or native method: {}", method.getName());
             return false;
         }
 
-        if (method.getName().contains(INSTRUMENTATION_SUFFIX)) {
+        if (!method.getName().endsWith(INSTRUMENTATION_SUFFIX)) {
             LOG.debug("Skipping already instrumented method: {}", method.getName());
             return false;
         }
