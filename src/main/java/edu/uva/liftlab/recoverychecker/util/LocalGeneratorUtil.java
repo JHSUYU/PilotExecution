@@ -40,5 +40,9 @@ public class LocalGeneratorUtil {
         return local;
     }
 
+    public String getClassName() {
+        return body.getMethod().getDeclaringClass().getName();
+    }
+
 
 }

@@ -564,7 +564,7 @@ public class SootUtils {
     }
 
     public static List<Unit> printLog(String message, LocalGeneratorUtil lg) {
-        if (!verbose) {
+        if (!shouldPrint(lg.getClassName())) {
             return new ArrayList<>();
         }
 
@@ -605,9 +605,16 @@ public class SootUtils {
         return units;
     }
 
+    public static boolean shouldPrint(String classname){
+        if(!verbose || !classname.contains("org.apache.cassandra.db.lifecycle.SSTableIntervalTree")){
+            return false;
+        }
+        return true;
+    }
+
 
     public static List<Unit> printLog4j(String message, LocalGeneratorUtil lg) {
-        if (!verbose) {
+        if (!shouldPrint(lg.getClassName())) {
             return new ArrayList<>();
         }
         // 创建 dryRunLog 方法调用
@@ -628,7 +635,7 @@ public class SootUtils {
     }
 
     public static List<Unit> printValue(Local localVariable, LocalGeneratorUtil lg, String additionalMessage) {
-        if (!verbose) {
+        if (!shouldPrint(lg.getClassName())) {
             return new ArrayList<>();
         }
         List<Unit> units = new ArrayList<>();

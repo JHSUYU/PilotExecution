@@ -4,10 +4,12 @@ import edu.uva.liftlab.recoverychecker.analysis.PhaseInfo;
 import edu.uva.liftlab.recoverychecker.distributedtracing.BaggagePropagation;
 import edu.uva.liftlab.recoverychecker.execution.DryRunExecutor;
 import edu.uva.liftlab.recoverychecker.generator.DryRunMethodGenerator;
+import edu.uva.liftlab.recoverychecker.isolation.IO.IOIsolation;
 import edu.uva.liftlab.recoverychecker.isolation.ObjectCloner;
 import edu.uva.liftlab.recoverychecker.isolation.stateredirection.ClassFilterHelper;
 import edu.uva.liftlab.recoverychecker.isolation.stateredirection.StateRedirection;
 import edu.uva.liftlab.recoverychecker.microfork.ThreadTransformer;
+import edu.uva.liftlab.recoverychecker.sanitization.Sanization;
 import edu.uva.liftlab.recoverychecker.staticanalysis.StartingPointInstrumenter;
 import edu.uva.liftlab.recoverychecker.tainting.tracetainting.InjectDryRunTrace;
 import edu.uva.liftlab.recoverychecker.util.SootUtils;
@@ -152,9 +154,13 @@ public class DryRunTransformer extends SceneTransformer {
         //IO isolation
 
 
+        //IOIsolation.redirectAllClassesIO(filter);
+
         dryRunMethodGenerator.processClasses(filter);
 
-        StateRedirection.redirectAllClassesStates(filter);
+        //StateRedirection.redirectAllClassesStates(filter);
+
+        Sanization.sanitizeAllClasses();
 
 
         LOG.info("Starting to add dry run fields to all classes");
