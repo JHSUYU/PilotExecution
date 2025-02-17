@@ -34,6 +34,5 @@ RC_CLASSPATH="${RC_CONF_DIR}:${RC_JAR}"
 
 # classpaths that Soot needs to know.
 if [[ -z "$SOOT_CLASSPATH" ]]; then
-  SOOT_CLASSPATH="${RC_HOME}/lib/opentelemetry-api-1.44.1.jar:${RC_HOME}/lib/opentelemetry-context-1.44.1.jar:${RC_HOME}/lib/opentelemetry-sdk-1.44.1.jar"
+  SOOT_CLASSPATH=$(find "${RC_HOME}/lib" -name "*.jar" | tr '\n' ':')
 fi
-
