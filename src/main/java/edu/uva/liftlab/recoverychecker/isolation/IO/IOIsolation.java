@@ -55,7 +55,7 @@ public class IOIsolation {
             Body instrumentationBody = Jimple.v().newBody(method);
             instrumentationBody.importBodyContentsFrom(originalBody);
 
-            redirectIOOperations(instrumentationBody);
+            ioProcessor.redirectIOOperations(instrumentationBody);
 
             instrumentationBody.validate();
             method.setActiveBody(instrumentationBody);
@@ -66,18 +66,6 @@ public class IOIsolation {
         }
     }
 
-    private void redirectIOOperations(Body body) {
-        UnitPatchingChain units = body.getUnits();
-        List<Unit> originalUnits = new ArrayList<>(units);
-        LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
-
-        for (Unit unit : originalUnits) {
-            if (unit instanceof InvokeStmt ||
-                    (unit instanceof AssignStmt && ((AssignStmt)unit).getRightOp() instanceof InvokeExpr)) {
-                ioProcessor.handleIOOperation(unit, units, lg, currentMethod);
-            }
-        }
-    }
 
     private boolean shouldInstrumentMethod(SootMethod method) {
         return !(method.isAbstract() || method.isNative()) && method.hasActiveBody();

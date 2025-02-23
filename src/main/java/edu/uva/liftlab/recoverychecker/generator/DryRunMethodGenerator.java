@@ -22,16 +22,293 @@ public class DryRunMethodGenerator {
     public void processClasses(ClassFilterHelper filter) {
         for (SootClass sc : Scene.v().getApplicationClasses()) {
             if (filter.shouldSkip(sc)) continue;
-            addDryRunFields(sc);
+            //addDryRunFields(sc);
             List<SootMethod> methods = new ArrayList<>(sc.getMethods());
             for (SootMethod method : methods) {
-                if (!method.getName().endsWith(INSTRUMENTATION_SUFFIX)) {
-                    this.addInstrumentedFunction(method, sc);
-                    this.addDryRunDivergeCode2OriginalFunc(method, sc, filter);
-                }
+                this.addInstrumentedFunction(method, sc);
+                this.addOriginalFunction(method, sc);
+                this.addDryRunDivergeCode2OriginalFunc(method, sc, filter);
             }
         }
+
+        for (SootClass sc : Scene.v().getApplicationClasses()) {
+            if(filter.shouldSkip(sc)){
+                continue;
+            }
+            replaceFunctionCallIteratively(sc, filter, INSTRUMENTATION_SUFFIX);
+        }
+
+        for (SootClass sc: Scene.v().getApplicationClasses()){
+            if(filter.shouldSkip(sc)){
+                continue;
+            }
+            replaceFunctionCallIteratively(sc, filter, ORIGINAL_SUFFIX);
+        }
+
+        for (SootClass sc: Scene.v().getApplicationClasses()){
+            if(filter.shouldSkip(sc)){
+                continue;
+            }
+            instrumentOriginalFuncCall(sc, filter, ORIGINAL_SUFFIX);
+        }
     }
+
+    public boolean hasSuffix(SootMethod method){
+        return method.getName().endsWith(INSTRUMENTATION_SUFFIX) || method.getName().endsWith(ORIGINAL_SUFFIX);
+    }
+
+    public void instrumentOriginalFuncCall(SootClass sc, ClassFilterHelper filter, String suffix) {
+        for (SootMethod method : sc.getMethods()) {
+            // Only process instrumented methods
+            if (!method.hasActiveBody() || hasSuffix(method)) {
+                continue;
+            }
+
+            Body body = method.getActiveBody();
+
+            // Iterate through all units in the method body
+            for (Unit unit : new ArrayList<>(body.getUnits())) {
+                // Look for invoke expressions
+                if (!(unit instanceof InvokeStmt) && !(unit instanceof AssignStmt)) {
+                    continue;
+                }
+
+                InvokeExpr invokeExpr = null;
+                if (unit instanceof InvokeStmt) {
+                    invokeExpr = ((InvokeStmt) unit).getInvokeExpr();
+                } else if (unit instanceof AssignStmt) {
+                    Value rightOp = ((AssignStmt) unit).getRightOp();
+                    if (rightOp instanceof InvokeExpr) {
+                        invokeExpr = (InvokeExpr) rightOp;
+                    }
+                }
+
+                if (invokeExpr == null || invokeExpr.getMethod().getName().equals("<init>") || hasSuffix(invokeExpr.getMethod())) {
+                    continue;
+                }
+
+                // Get the method being called
+                SootMethod targetMethod = invokeExpr.getMethod();
+                SootClass targetClass = targetMethod.getDeclaringClass();
+
+                // Skip if the target class should be filtered out
+
+                // Try to find the instrumented version of the method
+                String instrumentedMethodName = targetMethod.getName() + suffix;
+                SootMethod instrumentedMethod;
+                try {
+                    instrumentedMethod = targetClass.getMethod(
+                            instrumentedMethodName,
+                            targetMethod.getParameterTypes(),
+                            targetMethod.getReturnType()
+                    );
+                } catch (RuntimeException e) {
+                    // Instrumented version doesn't exist, skip
+                    continue;
+                }
+
+                // Create new invoke expression for the instrumented method
+                InvokeExpr newInvokeExpr;
+                LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+                if (invokeExpr instanceof StaticInvokeExpr) {
+                    newInvokeExpr = Jimple.v().newStaticInvokeExpr(
+                            instrumentedMethod.makeRef(),
+                            invokeExpr.getArgs()
+                    );
+                } else {
+                    // Generate local variable for the base
+                    Local baseLocal;
+                    Value base;
+
+                    if (invokeExpr instanceof VirtualInvokeExpr) {
+                        base = ((VirtualInvokeExpr) invokeExpr).getBase();
+                    } else if (invokeExpr instanceof SpecialInvokeExpr) {
+                        base = ((SpecialInvokeExpr) invokeExpr).getBase();
+                    } else if (invokeExpr instanceof InterfaceInvokeExpr) {
+                        base = ((InterfaceInvokeExpr) invokeExpr).getBase();
+                    } else {
+                        continue;
+                    }
+
+                    // If base is not already a Local, create a new local and assign the base to it
+                    if (!(base instanceof Local)) {
+                        baseLocal = lg.generateLocal(base.getType());
+                        Unit assignBase = Jimple.v().newAssignStmt(baseLocal, base);
+                        body.getUnits().insertBefore(assignBase, unit);
+                    } else {
+                        baseLocal = (Local) base;
+                    }
+
+                    // Create appropriate invoke expression based on type
+                    if (invokeExpr instanceof VirtualInvokeExpr) {
+                        newInvokeExpr = Jimple.v().newVirtualInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    } else if (invokeExpr instanceof SpecialInvokeExpr) {
+                        newInvokeExpr = Jimple.v().newSpecialInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    } else { // InterfaceInvokeExpr
+                        newInvokeExpr = Jimple.v().newInterfaceInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    }
+                }
+
+                // Replace the old invoke expression with the new one
+                if (unit instanceof InvokeStmt) {
+                    body.getUnits().insertBefore(
+                            Jimple.v().newInvokeStmt(newInvokeExpr),
+                            unit
+                    );
+                    body.getUnits().remove(unit);
+                } else if (unit instanceof AssignStmt) {
+                    AssignStmt assignStmt = (AssignStmt) unit;
+                    body.getUnits().insertBefore(
+                            Jimple.v().newAssignStmt(assignStmt.getLeftOp(), newInvokeExpr),
+                            unit
+                    );
+                    body.getUnits().remove(unit);
+                }
+            }
+
+            body.validate();
+        }
+    }
+
+    public void replaceFunctionCallIteratively(SootClass sc, ClassFilterHelper filter, String suffix) {
+        for (SootMethod method : sc.getMethods()) {
+            // Only process instrumented methods
+            if (!method.getName().endsWith(suffix) || !method.hasActiveBody()) {
+                continue;
+            }
+
+            Body body = method.getActiveBody();
+
+            // Iterate through all units in the method body
+            for (Unit unit : new ArrayList<>(body.getUnits())) {
+                // Look for invoke expressions
+                if (!(unit instanceof InvokeStmt) && !(unit instanceof AssignStmt)) {
+                    continue;
+                }
+
+                InvokeExpr invokeExpr = null;
+                if (unit instanceof InvokeStmt) {
+                    invokeExpr = ((InvokeStmt) unit).getInvokeExpr();
+                } else if (unit instanceof AssignStmt) {
+                    Value rightOp = ((AssignStmt) unit).getRightOp();
+                    if (rightOp instanceof InvokeExpr) {
+                        invokeExpr = (InvokeExpr) rightOp;
+                    }
+                }
+
+                if (invokeExpr == null || invokeExpr.getMethod().getName().equals("<init>")) {
+                    continue;
+                }
+
+                // Get the method being called
+                SootMethod targetMethod = invokeExpr.getMethod();
+                SootClass targetClass = targetMethod.getDeclaringClass();
+
+                // Skip if the target class should be filtered out
+
+                // Try to find the instrumented version of the method
+                String instrumentedMethodName = targetMethod.getName() + suffix;
+                SootMethod instrumentedMethod;
+                try {
+                    instrumentedMethod = targetClass.getMethod(
+                            instrumentedMethodName,
+                            targetMethod.getParameterTypes(),
+                            targetMethod.getReturnType()
+                    );
+                } catch (RuntimeException e) {
+                    // Instrumented version doesn't exist, skip
+                    continue;
+                }
+
+                // Create new invoke expression for the instrumented method
+                InvokeExpr newInvokeExpr;
+                LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+
+                if (invokeExpr instanceof StaticInvokeExpr) {
+                    newInvokeExpr = Jimple.v().newStaticInvokeExpr(
+                            instrumentedMethod.makeRef(),
+                            invokeExpr.getArgs()
+                    );
+                } else {
+                    // Generate local variable for the base
+                    Local baseLocal;
+                    Value base;
+
+                    if (invokeExpr instanceof VirtualInvokeExpr) {
+                        base = ((VirtualInvokeExpr) invokeExpr).getBase();
+                    } else if (invokeExpr instanceof SpecialInvokeExpr) {
+                        base = ((SpecialInvokeExpr) invokeExpr).getBase();
+                    } else if (invokeExpr instanceof InterfaceInvokeExpr) {
+                        base = ((InterfaceInvokeExpr) invokeExpr).getBase();
+                    } else {
+                        continue;
+                    }
+
+                    // If base is not already a Local, create a new local and assign the base to it
+                    if (!(base instanceof Local)) {
+                        baseLocal = lg.generateLocal(base.getType());
+                        Unit assignBase = Jimple.v().newAssignStmt(baseLocal, base);
+                        body.getUnits().insertBefore(assignBase, unit);
+                    } else {
+                        baseLocal = (Local) base;
+                    }
+
+                    // Create appropriate invoke expression based on type
+                    if (invokeExpr instanceof VirtualInvokeExpr) {
+                        newInvokeExpr = Jimple.v().newVirtualInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    } else if (invokeExpr instanceof SpecialInvokeExpr) {
+                        newInvokeExpr = Jimple.v().newSpecialInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    } else { // InterfaceInvokeExpr
+                        newInvokeExpr = Jimple.v().newInterfaceInvokeExpr(
+                                baseLocal,
+                                instrumentedMethod.makeRef(),
+                                invokeExpr.getArgs()
+                        );
+                    }
+                }
+
+                // Replace the old invoke expression with the new one
+                if (unit instanceof InvokeStmt) {
+                    body.getUnits().insertBefore(
+                            Jimple.v().newInvokeStmt(newInvokeExpr),
+                            unit
+                    );
+                    body.getUnits().remove(unit);
+                } else if (unit instanceof AssignStmt) {
+                    AssignStmt assignStmt = (AssignStmt) unit;
+                    body.getUnits().insertBefore(
+                            Jimple.v().newAssignStmt(assignStmt.getLeftOp(), newInvokeExpr),
+                            unit
+                    );
+                    body.getUnits().remove(unit);
+                }
+            }
+
+            body.validate();
+        }
+    }
+
 
     private void addDryRunFields(SootClass sootClass){
         if (sootClass.isEnum() || sootClass.isInterface()) {
@@ -96,6 +373,38 @@ public class DryRunMethodGenerator {
         }
 
         String instrumentationMethodName = getInstrumnentationMethodName(originalMethod);
+        SootMethod instrumentationMethod = new SootMethod(
+                instrumentationMethodName,
+                originalMethod.getParameterTypes(),
+                originalMethod.getReturnType(),
+                originalMethod.getModifiers()
+        );
+        sootClass.addMethod(instrumentationMethod);
+
+        Body originalBody = originalMethod.retrieveActiveBody();
+        Body instrumentationBody = Jimple.v().newBody(instrumentationMethod);
+
+        if (originalMethod.isConstructor()) {
+            handleConstructorInstrumentation(originalBody, instrumentationBody);
+        } else {
+            instrumentationBody.importBodyContentsFrom(originalBody);
+        }
+
+        instrumentationMethod.setActiveBody(instrumentationBody);
+    }
+
+
+    public void addOriginalFunction(SootMethod originalMethod, SootClass sootClass) {
+        if(!originalMethodShouldBeInstrumented(originalMethod, sootClass)) {
+            return;
+        }
+
+        //print all of the soot methods of sootclass
+        for(SootMethod sm:sootClass.getMethods()){
+            LOG.info("SootMethod: "+sm.getName()+ " in class "+sootClass.getName());
+        }
+
+        String instrumentationMethodName = getOriginalMethodName(originalMethod);
         SootMethod instrumentationMethod = new SootMethod(
                 instrumentationMethodName,
                 originalMethod.getParameterTypes(),

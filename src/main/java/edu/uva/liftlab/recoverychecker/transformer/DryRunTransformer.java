@@ -142,17 +142,6 @@ public class DryRunTransformer extends SceneTransformer {
 //        threadAnalyzer.hookMicroFork();
         LOG.info("DryRunTransformer executing with phase: " + phaseName);
 
-        //func->func$instrumentation
-        //field->field$dryrun
-
-
-        //func1$instrumentation Runnable Task:run()
-        //run() -> run$instrumentation
-
-        //Distributed Tracing  Runnable Task:run()
-        //startingpoint->dry-run. cv.signal() --?cv.await() -> fork.
-        //IO isolation
-
 
         //IOIsolation.redirectAllClassesIO(filter);
 

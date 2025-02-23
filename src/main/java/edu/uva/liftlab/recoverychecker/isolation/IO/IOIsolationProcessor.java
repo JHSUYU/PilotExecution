@@ -1,68 +1,107 @@
 package edu.uva.liftlab.recoverychecker.isolation.IO;
 
 import edu.uva.liftlab.recoverychecker.util.LocalGeneratorUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import soot.*;
 import soot.jimple.*;
 
+import java.util.*;
+
+
 public class IOIsolationProcessor {
-    private static final String FILE_CHANNEL_CLASS = "java.nio.channels.FileChannel";
-    private static final String SHADOW_FILE_CHANNEL = "org.pilot.filesystem.ShadowFileChannel";
+    private final IOOperationHandler handler;
+    private static final Logger logger = LoggerFactory.getLogger(IOIsolationProcessor.class);
 
-    public void handleIOOperation(Unit unit, UnitPatchingChain units,
-                                  LocalGeneratorUtil lg, SootMethod method) {
-        InvokeExpr invokeExpr = null;
-
-        if (unit instanceof InvokeStmt) {
-            invokeExpr = ((InvokeStmt) unit).getInvokeExpr();
-        } else if (unit instanceof AssignStmt) {
-            Value rightOp = ((AssignStmt) unit).getRightOp();
-            if (rightOp instanceof InvokeExpr) {
-                invokeExpr = (InvokeExpr) rightOp;
-            }
-        }
-
-        if (invokeExpr != null) {
-            redirectFileChannelOpen(unit, units, invokeExpr, lg);
-        }
+    public IOIsolationProcessor() {
+        this.handler = new CompositeIOHandler();
     }
 
-    private void redirectFileChannelOpen(Unit unit, UnitPatchingChain units,
-                                         InvokeExpr invokeExpr, LocalGeneratorUtil lg) {
-        if (isFileChannelOpen(invokeExpr)) {
-            // 替换为 ShadowFileChannel.open 调用
-            SootMethodRef shadowOpen = Scene.v().makeMethodRef(
-                    Scene.v().getSootClass(SHADOW_FILE_CHANNEL),
-                    "open",
-                    invokeExpr.getMethod().getParameterTypes(),
-                    invokeExpr.getMethod().getReturnType(),
-                    true
-            );
+    public void redirectIOOperations(Body body) {
+        UnitPatchingChain units = body.getUnits();
+        List<Unit> originalUnits = new ArrayList<>(units);
+        LocalGeneratorUtil lg = new LocalGeneratorUtil(body);
+        Set<Unit> toRemove = new HashSet<>();
 
-            StaticInvokeExpr newInvokeExpr = Jimple.v().newStaticInvokeExpr(
-                    shadowOpen,
-                    invokeExpr.getArgs()
-            );
-
+        for (Unit unit : originalUnits) {
             if (unit instanceof AssignStmt) {
-                units.insertBefore(
-                        Jimple.v().newAssignStmt(
-                                ((AssignStmt) unit).getLeftOp(),
-                                newInvokeExpr
-                        ),
-                        unit
-                );
-            } else {
-                units.insertBefore(
-                        Jimple.v().newInvokeStmt(newInvokeExpr),
-                        unit
-                );
+                AssignStmt assign = (AssignStmt) unit;
+                Value rightOp = assign.getRightOp();
+
+                if (rightOp instanceof NewExpr) {
+                    handleConstructor(unit, assign, units, lg, body.getMethod(), toRemove);
+                }
+                else if (rightOp instanceof InvokeExpr) {
+                    IOContext context = new IOContext(unit, null, units, lg, body.getMethod());
+                    handler.handle(context);
+                }
             }
+            else if (unit instanceof InvokeStmt) {
+                IOContext context = new IOContext(unit, null, units, lg, body.getMethod());
+                handler.handle(context);
+            }
+        }
+
+        for (Unit unit : toRemove) {
             units.remove(unit);
         }
     }
 
-    private boolean isFileChannelOpen(InvokeExpr expr) {
-        return expr.getMethod().getDeclaringClass().getName().equals(FILE_CHANNEL_CLASS)
-                && expr.getMethod().getName().equals("open");
+    private void handleConstructor(Unit currentUnit, AssignStmt newAssign,
+                                   UnitPatchingChain units, LocalGeneratorUtil lg,
+                                   SootMethod method, Set<Unit> toRemove) {
+        Value leftOp = newAssign.getLeftOp();
+
+        Unit initUnit = findConstructorCall(units, currentUnit, leftOp);
+        if (initUnit == null) {
+            return;
+        }
+
+        logger.info("Found Constructor: {} with init call: {}", currentUnit, initUnit);
+
+        IOContext context = new IOContext(
+                currentUnit,    // new语句
+                initUnit,      // 构造函数调用语句
+                units,
+                lg,
+                method
+        );
+
+        if (handler.handle(context)) {
+            toRemove.add(currentUnit);
+            toRemove.add(initUnit);
+        }
+    }
+
+    private Unit findConstructorCall(UnitPatchingChain units, Unit startUnit, Value targetLocal) {
+        Iterator<Unit> it = units.iterator(startUnit);
+        while (it.hasNext()) {
+            Unit unit = it.next();
+
+            if (unit instanceof InvokeStmt) {
+                InvokeExpr expr = ((InvokeStmt) unit).getInvokeExpr();
+                if (expr instanceof SpecialInvokeExpr) {
+                    SpecialInvokeExpr constructorCall = (SpecialInvokeExpr) expr;
+                    if (constructorCall.getMethod().getName().equals("<init>") &&
+                            constructorCall.getBase().equivTo(targetLocal)) {
+                        return unit;
+                    }
+                }
+            }
+            else if (unit instanceof AssignStmt) {
+                AssignStmt assign = (AssignStmt) unit;
+                if (assign.containsInvokeExpr()) {
+                    InvokeExpr expr = assign.getInvokeExpr();
+                    if (expr instanceof SpecialInvokeExpr) {
+                        SpecialInvokeExpr constructorCall = (SpecialInvokeExpr) expr;
+                        if (constructorCall.getMethod().getName().equals("<init>") &&
+                                constructorCall.getBase().equivTo(targetLocal)) {
+                            return unit;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
     }
 }

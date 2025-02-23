@@ -8,6 +8,7 @@ public class Constants {
 
     public static final String DRY_RUN_SUFFIX = "$dryRun";
 
+    public static final String ORIGINAL_SUFFIX = "$original";
     public static final String INSTRUMENTATION_SUFFIX = "$instrumentation";
 
     public static final String INSTRUMENTATION_SUFFIX_FOR_INIT_FUNC = "_$instrumentation";

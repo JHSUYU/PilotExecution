@@ -24,6 +24,8 @@ public class StartingPointInstrumenter {
     }
 
     public SootMethod instrumentStartingPoint() {
+        //func--recovery
+        //Pilot.createBaggage()
         String targetMethodSignature = startingPoints.get(0);
         String pilotMethodSignature = startingPoints.get(1);
         LOG.info("Starting point method is: {}", targetMethodSignature);

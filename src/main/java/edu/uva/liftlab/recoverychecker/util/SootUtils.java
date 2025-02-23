@@ -67,6 +67,18 @@ public class SootUtils {
         }
     }
 
+    public static String getOriginalMethodName(SootMethod method){
+        if(method.isConstructor()){
+            assert method.getName().equals("<init>");
+            return "init"+ORIGINAL_SUFFIX;
+        } else if(method.isStaticInitializer()){
+            assert method.getName().equals("<clinit>");
+            return "clinit"+ORIGINAL_SUFFIX;
+        }else{
+            return method.getName()+ORIGINAL_SUFFIX;
+        }
+    }
+
     public static boolean shouldSkipClass(SootClass sc, String configPath) {
         if (sc.isInterface() || sc.isPhantom()) {
             return true;
