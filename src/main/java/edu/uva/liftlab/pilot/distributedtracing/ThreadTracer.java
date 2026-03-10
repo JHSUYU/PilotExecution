@@ -50,6 +50,7 @@ public class ThreadTracer {
     }
 
     public void instrument() {
+        instrumentClass();
         replaceThreadStartCalls(this.sootClass);
     }
 
@@ -107,7 +108,7 @@ public class ThreadTracer {
     }
 
 
-    public void instrumentBackup() {
+    public void instrumentClass() {
         if(!isThreadOrSubclass(this.sootClass)) {
             return;
         }
