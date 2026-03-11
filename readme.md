@@ -193,9 +193,9 @@ Each node in the context tree shows: `([hostname] functionname (threadId, Timest
 
 #### 3c. Apply a Minor Tweak
 
-The root cause of SOLR-17515 is an incorrect configuration. As described in the issue, SolrCloud users can prevent this NPE by ensuring the `solr.httpclient.builder.factory` system property is not set on their Solr nodes (this system property is set by the `bin/solr` startup script itself if `SOLR_AUTH_TYPE` is specified in `solr.in.sh`, so removing the `SOLR_AUTH_TYPE` env-var will also help). The operator can fix it with this minor tweak:
+The root cause of SOLR-17515 is a misconfigured system property that causes an NPE during replica recovery. As described in the issue, SolrCloud users can work around this by unsetting that property on the affected node to make recovery succeed. 
+For simplicity, we manually inject the error for reproduction, and to simulate the tweak, we simply remove the fault marker: 
 
-> **Note:** For simplicity, we manually inject the error for reproduction. Here, to simulate the tweak, we simply remove the fault marker.
 
 ```bash
 ./tweak_conf.sh
